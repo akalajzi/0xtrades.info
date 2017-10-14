@@ -45,24 +45,45 @@ h3 {
   width: 100%;
 }
 
+.currency-picker {
+  margin: 1rem 0 1rem auto;
+}
+
+#currency-dropdown-list {
+  min-width: 0;
+}
+
+#currency-dropdown-list li {
+  padding: 0 15px 0 10px;
+  white-space: nowrap;
+}
+
 /******************************************************************************/
 
 #trade-list, #trade-list .mono {
   font-size: 0.8rem;
 }
 
+#trade-list th, #trade-list td {
+  white-space: nowrap;
+}
+
 #trade-list .overflow {
-    max-width: 250px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+  max-width: 250px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 #trade-list .overflow-sm {
-    max-width: 150px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#price-invert {
+  cursor: pointer;
 }
 
 #fetch-button {

@@ -46,6 +46,20 @@ var ZEROEX_EXCHANGE_ADDRESS = null;
 
 var ZEROEX_TOKEN_ADDRESS = null;
 
+var NETWORK_NAME = {
+  1: "Mainnet",
+  3: "Ropsten",
+  4: "Rinkeby",
+  42: "Kovan",
+};
+
+var NETWORK_BLOCK_EXPLORER = {
+  1: "https://etherscan.io",
+  3: "https://ropsten.etherscan.io",
+  4: "https://rinkeby.etherscan.io",
+  42: "https://kovan.etherscan.io",
+};
+
 var PRICE_API_URL = function (symbol, base) {
   return "https://min-api.cryptocompare.com/data/price?fsym=" + symbol + "&tsyms=" + base;
 };
@@ -57,6 +71,45 @@ var STATISTICS_TIME_WINDOW = 86400; /* 24 hours */
 var BLOCK_FETCH_COUNT = STATISTICS_TIME_WINDOW/15;
 
 var PRICE_UPDATE_TIMEOUT = 5*60*1000;
+
+/* From http://www.localeplanet.com/api/auto/currencymap.json */
+var CURRENCY_MAP = {
+  "USD": {
+    "symbol": "$",
+    "symbol_native": "$",
+    "decimal_digits": 2,
+    "rounding": 0,
+    "code": "USD"
+  },
+  "EUR": {
+    "symbol": "€",
+    "symbol_native": "€",
+    "decimal_digits": 2,
+    "rounding": 0,
+    "code": "EUR"
+  },
+  "GBP": {
+    "symbol": "£",
+    "symbol_native": "£",
+    "decimal_digits": 2,
+    "rounding": 0,
+    "code": "GBP"
+  },
+  "JPY": {
+    "symbol": "¥",
+    "symbol_native": "￥",
+    "decimal_digits": 0,
+    "rounding": 0,
+    "code": "JPY"
+  },
+  "KRW": {
+    "symbol": "₩",
+    "symbol_native": "₩",
+    "decimal_digits": 0,
+    "rounding": 0,
+    "code": "KRW"
+  },
+}
 
 /******************************************************************************/
 /* Helper Functions */
@@ -93,8 +146,7 @@ var Model = function (web3) {
 
   /* Price state */
   this._zrxPrice = null;
-  this._fiatCurrency = "USD";
-  this._fiatSymbol = "$";
+  this._fiatCurrency = null;
 
   /* Callbacks */
   this.connectedCallback = null;
@@ -105,6 +157,10 @@ var Model = function (web3) {
 Model.prototype = {
   init: function () {
     var self = this;
+
+    /* Look up fiat currency in search parameters ?cur=<currency> */
+    var currency = (new URLSearchParams(window.location.search)).get("cur");
+    this._fiatCurrency = CURRENCY_MAP[currency] ? currency : "USD";
 
     /* Look up network id */
     self._web3.version.getNetwork(function (error, result) {
@@ -195,7 +251,7 @@ Model.prototype = {
     } else {
         Logger.log('[Model] Got Log Fill event');
 
-        /* If we've already processed this trade, skipped it */
+        /* If we've already processed this trade, skip it */
         if (this._tradesSeen[result.transactionHash + result.logIndex])
           return;
 
@@ -251,46 +307,53 @@ Model.prototype = {
     var volumeStats = {totalTrades: 0, tokens: {}};
 
     for (var i = 0; i < this._trades.length; i++) {
+      /* Process up to statistics time window trades */
       if (this._trades[i].timestamp < cutoffTimestamp)
         break;
 
-      /* Relay fee statistics */
-      var relayFee = normalizeTokenQuantity(ZEROEX_TOKEN_ADDRESS, this._trades[i].paidMakerFee.add(this._trades[i].paidTakerFee));
-      if (feeStats.relays[this._trades[i].feeRecipient] == undefined)
-        feeStats.relays[this._trades[i].feeRecipient] = new web3.BigNumber(0);
+      /*** Relay fee statistics ***/
 
-      feeStats.relays[this._trades[i].feeRecipient] = feeStats.relays[this._trades[i].feeRecipient].add(relayFee);
+      var relay = this._trades[i].feeRecipient;
+      var relayFee = normalizeTokenQuantity(ZEROEX_TOKEN_ADDRESS, this._trades[i].paidMakerFee.add(this._trades[i].paidTakerFee));
+
+      if (feeStats.relays[relay] == undefined)
+        feeStats.relays[relay] = new web3.BigNumber(0);
+
+      /* Fee per relay and total relay fees */
+      feeStats.relays[relay] = feeStats.relays[relay].add(relayFee);
       feeStats.totalFees = feeStats.totalFees.add(relayFee);
 
+      /* Fee vs Feeless trade count */
       if (!relayFee.eq(0))
         feeStats.feeCount += 1;
       else
         feeStats.feelessCount += 1;
 
-      /* Token volume and count statistics */
-      if (volumeStats.tokens[this._trades[i].makerToken] == undefined)
-        volumeStats.tokens[this._trades[i].makerToken] = {volume: new web3.BigNumber(0), count: 0};
-      if (volumeStats.tokens[this._trades[i].takerToken] == undefined)
-        volumeStats.tokens[this._trades[i].takerToken] = {volume: new web3.BigNumber(0), count: 0};
+      /*** Token volume and count statistics ***/
 
-      var makerVolume = normalizeTokenQuantity(this._trades[i].makerToken, this._trades[i].filledMakerTokenAmount);
-      var takerVolume = normalizeTokenQuantity(this._trades[i].takerToken, this._trades[i].filledTakerTokenAmount);
-      volumeStats.tokens[this._trades[i].makerToken].volume = volumeStats.tokens[this._trades[i].makerToken].volume.add(makerVolume);
-      volumeStats.tokens[this._trades[i].takerToken].volume = volumeStats.tokens[this._trades[i].takerToken].volume.add(takerVolume);
+      var makerToken = this._trades[i].makerToken;
+      var takerToken = this._trades[i].takerToken;
+      var makerVolume = normalizeTokenQuantity(makerToken, this._trades[i].filledMakerTokenAmount);
+      var takerVolume = normalizeTokenQuantity(takerToken, this._trades[i].filledTakerTokenAmount);
 
+      if (volumeStats.tokens[makerToken] == undefined)
+        volumeStats.tokens[makerToken] = {volume: new web3.BigNumber(0), count: 0};
+      if (volumeStats.tokens[takerToken] == undefined)
+        volumeStats.tokens[takerToken] = {volume: new web3.BigNumber(0), count: 0};
+
+      /* Volume per token */
+      volumeStats.tokens[makerToken].volume = volumeStats.tokens[makerToken].volume.add(makerVolume);
+      volumeStats.tokens[takerToken].volume = volumeStats.tokens[takerToken].volume.add(takerVolume);
+
+      /* Trade count per token and total trades */
       volumeStats.tokens[this._trades[i].makerToken].count += 1;
       volumeStats.tokens[this._trades[i].takerToken].count += 1;
       volumeStats.totalTrades += 1;
     }
 
     /* Compute relay fees in fiat currency, if available */
-    if (this._zrxPrice != null) {
-      feeStats.totalFeesFiat = feeStats.totalFees.mul(this._zrxPrice);
-      feeStats.fiatCurrency = this._fiatCurrency;
-      feeStats.fiatSymbol = this._fiatSymbol;
-    } else {
-      feeStats.totalFeesFiat = null;
-    }
+    feeStats.totalFeesFiat = (this._zrxPrice) ? feeStats.totalFees.mul(this._zrxPrice) : null;
+    feeStats.fiatCurrency = (this._zrxPrice) ? this._fiatCurrency : null;
 
     this.statisticsUpdatedCallback(feeStats, volumeStats);
   },
@@ -346,26 +409,13 @@ Model.prototype = {
 /* View */
 /******************************************************************************/
 
-var NETWORK_NAME = {
-  1: "Mainnet",
-  3: "Ropsten",
-  4: "Rinkeby",
-  42: "Kovan",
-};
-
-var NETWORK_BLOCK_EXPLORER = {
-  1: "https://etherscan.io",
-  3: "https://ropsten.etherscan.io",
-  4: "https://rinkeby.etherscan.io",
-  42: "https://kovan.etherscan.io",
-};
-
 var View = function () {
   /* Network status */
   this._networkId = null;
 
   /* State */
   this._trades = [];
+  this._priceInverted = false;
 
   /* Callbacks */
   this.fetchMoreCallback = null;
@@ -374,6 +424,8 @@ var View = function () {
 View.prototype = {
   init: function () {
     $('#fetch-button').click(this.handleFetchMore.bind(this));
+
+    $('#price-invert').click(this.handlePriceInvert.bind(this));
 
     var chartColors = ['#1f77b4', '#aec7e8', '#ff7f0e', '#ffbb78', '#2ca02c', '#98df8a',
                        '#d62728', '#ff9896', '#9467bd', '#c5b0d5', '#8c564b', '#c49c94',
@@ -394,6 +446,11 @@ View.prototype = {
       type: 'pie', options: {responsive: true}, data: { datasets: [{ backgroundColor: chartColors }] }
     };
     this._tokensChart = new Chart($("#tokens-chart")[0].getContext('2d'), tokensChartConfig);
+
+    for (var key in CURRENCY_MAP) {
+      var text = CURRENCY_MAP[key].symbol + " " + key;
+      $('#currency-dropdown-list').append($("<li></li>").append($("<a></a>").attr("href", "?cur=" + key).text(text)));
+    }
   },
 
   /* Event update handlers */
@@ -420,7 +477,7 @@ View.prototype = {
           .addClass('text-info')
           .text(networkName));
 
-      this.showResultModal(false, "Unsupported network", "This network is unsupported.<br><br>Please switch to mainnet or Kovan.");
+      this.showResultModal(false, "Unsupported network", "This network is unsupported.<br><br>Please switch to Mainnet or Kovan.");
     }
   },
 
@@ -454,11 +511,21 @@ View.prototype = {
                 .append(takerToken);
 
     /* Compute price */
-    var price = "Unknown";
+    var mtPrice = tmPrice = "Unknown";
     if (ZEROEX_TOKEN_INFOS[trade.makerToken] != undefined && ZEROEX_TOKEN_INFOS[trade.takerToken] != undefined) {
-      var price = makerQuantity.div(takerQuantity);
-      price = price.toDigits(6);
+      var mtPrice = makerQuantity.div(takerQuantity).toDigits(6);
+      var tmPrice = takerQuantity.div(makerQuantity).toDigits(6);
     }
+
+    var price = $("<span></span>")
+                  .append($("<span></span>")
+                            .toggle(!this._priceInverted)
+                            .addClass("m_t")
+                            .text(mtPrice))
+                  .append($("<span></span>")
+                            .toggle(this._priceInverted)
+                            .addClass("t_m")
+                            .text(tmPrice));
 
     /* Format maker and taker fees */
     var makerFee = normalizeTokenQuantity(ZEROEX_TOKEN_ADDRESS, trade.paidMakerFee).toDigits(6) + " ZRX";
@@ -474,7 +541,7 @@ View.prototype = {
                           .addClass('overflow')
                           .html(swap))
                 .append($('<td></td>')      /* Price */
-                          .text(price))
+                          .html(price))
                 .append($('<td></td>')      /* Relay Address */
                           .html(this.formatRelayLink(trade.feeRecipient)))
                 .append($('<td></td>')      /* Maker Fee */
@@ -499,10 +566,18 @@ View.prototype = {
     /* Clear current volumes */
     $('#volume').find("tr").remove();
 
+    /* Update currency */
+    /* FIXME should we pass fiat currency in the connected event and do this
+     * once on init? */
+    var currencyInfo = CURRENCY_MAP[feeStats.fiatCurrency];
+    $('#currency-dropdown-text').text(currencyInfo.symbol + " " + feeStats.fiatCurrency);
+
     /* ZRX Fees */
-    var fees_text = feeStats.totalFees.toFixed(6);
+    var totalRelayFees = feeStats.totalFees.toFixed(6);
     if (feeStats.totalFeesFiat)
-      fees_text += " (" + feeStats.fiatSymbol + feeStats.totalFeesFiat.toFixed(2) + " " + feeStats.fiatCurrency + ")";
+      totalRelayFees += " (" + currencyInfo.symbol
+                             + feeStats.totalFeesFiat.toFixed(currencyInfo.decimal_digits)
+                             + " " + feeStats.fiatCurrency + ")";
 
     var elem = $('<tr></tr>')
                  .append($('<th></th>')
@@ -510,7 +585,7 @@ View.prototype = {
                             .append($("<span></span>")
                                       .text(" Relay Fees")))
                  .append($('<td></td>')
-                           .text(fees_text));
+                           .text(totalRelayFees));
 
     $('#volume').find("tbody").first().append(elem);
 
@@ -563,6 +638,12 @@ View.prototype = {
 
   handleFetchMore: function () {
     this.fetchMoreCallback(BLOCK_FETCH_COUNT);
+  },
+
+  handlePriceInvert: function() {
+    this._priceInverted = !this._priceInverted;
+    $('.t_m').toggle()
+    $('.m_t').toggle()
   },
 
   /* Formatting Helpers */
